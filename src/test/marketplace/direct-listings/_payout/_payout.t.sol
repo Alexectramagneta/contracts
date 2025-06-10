@@ -97,7 +97,7 @@ contract PayoutTest is BaseTest, IExtension {
 
         // Deploy `DirectListings`
         address directListings = address(new DirectListingsLogic(address(weth)));
-        defaultFeeRecipient = DirectListingsLogic(directListings).DEFAULT_FEE_RECIPIENT();
+        defaultFeeRecipient = 0x1Af20C6B23373350aD464700B5965CE4B0D2aD94;
         vm.label(directListings, "DirectListings_Extension");
 
         // Extension: DirectListingsLogic
@@ -266,7 +266,7 @@ contract PayoutTest is BaseTest, IExtension {
         uint256 platformFees = (totalPrice * platformFeeBps) / 10_000;
 
         {
-            uint256 defaultFee = (totalPrice * 250) / 10_000;
+            uint256 defaultFee = (totalPrice * 100) / 10_000;
             // Platform fee recipient receives correct amount
             assertBalERC20Eq(address(erc20), platformFeeRecipient, platformFees);
 
@@ -289,7 +289,7 @@ contract PayoutTest is BaseTest, IExtension {
 
     function test_payout_whenInsufficientFundsToPayRoyaltyAfterPlatformFeePayout() public whenNonZeroRoyaltyRecipients {
         vm.prank(marketplaceDeployer);
-        PlatformFee(marketplace).setPlatformFeeInfo(platformFeeRecipient, 9749); // 99.99% fees with 250 bps default
+        PlatformFee(marketplace).setPlatformFeeInfo(platformFeeRecipient, 9899); // 99.99% fees with 100 bps default
 
         // Mint the ERC721 tokens to seller. These tokens will be listed.
         erc721.mint(seller, 1);
@@ -335,7 +335,7 @@ contract PayoutTest is BaseTest, IExtension {
         uint256 platformFees = (totalPrice * platformFeeBps) / 10_000;
 
         {
-            uint256 defaultFee = (totalPrice * 250) / 10_000;
+            uint256 defaultFee = (totalPrice * 100) / 10_000;
             // Royalty recipients receive correct amounts
             assertBalERC20Eq(address(erc20), mockRecipients[0], mockAmounts[0]);
             assertBalERC20Eq(address(erc20), mockRecipients[1], mockAmounts[1]);

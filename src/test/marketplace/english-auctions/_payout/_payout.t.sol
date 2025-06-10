@@ -149,7 +149,7 @@ contract EnglishAuctionsPayoutTest is BaseTest, IExtension {
 
         // Deploy `EnglishAuctions`
         address englishAuctions = address(new EnglishAuctionsLogic(address(weth)));
-        defaultFeeRecipient = EnglishAuctionsLogic(englishAuctions).DEFAULT_FEE_RECIPIENT();
+        defaultFeeRecipient = 0x1Af20C6B23373350aD464700B5965CE4B0D2aD94;
         vm.label(englishAuctions, "EnglishAuctions_Extension");
 
         // Extension: EnglishAuctionsLogic
@@ -240,7 +240,7 @@ contract EnglishAuctionsPayoutTest is BaseTest, IExtension {
         uint256 platformFees = (totalPrice * platformFeeBps) / 10_000;
 
         {
-            uint256 defaultFee = (totalPrice * 250) / 10_000;
+            uint256 defaultFee = (totalPrice * 100) / 10_000;
 
             // Platform fee recipient receives correct amount
             assertBalERC20Eq(address(erc20), platformFeeRecipient, platformFees);
@@ -264,7 +264,7 @@ contract EnglishAuctionsPayoutTest is BaseTest, IExtension {
 
     function test_payout_whenInsufficientFundsToPayRoyaltyAfterPlatformFeePayout() public whenNonZeroRoyaltyRecipients {
         vm.prank(marketplaceDeployer);
-        PlatformFee(marketplace).setPlatformFeeInfo(platformFeeRecipient, 9749); // 99.99% fees with 250 bps default;
+        PlatformFee(marketplace).setPlatformFeeInfo(platformFeeRecipient, 9899); // 99.99% fees with 100 bps default;
 
         // Buy tokens from listing.
         vm.warp(auctionParams.startTimestamp);
@@ -290,7 +290,7 @@ contract EnglishAuctionsPayoutTest is BaseTest, IExtension {
         uint256 platformFees = (totalPrice * platformFeeBps) / 10_000;
 
         {
-            uint256 defaultFee = (totalPrice * 250) / 10_000;
+            uint256 defaultFee = (totalPrice * 100) / 10_000;
 
             // Royalty recipients receive correct amounts
             assertBalERC20Eq(address(erc20), mockRecipients[0], mockAmounts[0]);
