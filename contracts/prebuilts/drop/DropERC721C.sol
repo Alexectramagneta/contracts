@@ -3,17 +3,27 @@ pragma solidity ^0.8.11;
 
 /// @author thirdweb
 
+//   $$\     $$\       $$\                 $$\                         $$\
+//   $$ |    $$ |      \__|                $$ |                        $$ |
+// $$$$$$\   $$$$$$$\  $$\  $$$$$$\   $$$$$$$ |$$\  $$\  $$\  $$$$$$\  $$$$$$$\
+// \_$$  _|  $$  __$$\ $$ |$$  __$$\ $$  __$$ |$$ | $$ | $$ |$$  __$$\ $$  __$$\
+//   $$ |    $$ |  $$ |$$ |$$ |  \__|$$ /  $$ |$$ | $$ | $$ |$$$$$$$$ |$$ |  $$ |
+//   $$ |$$\ $$ |  $$ |$$ |$$ |      $$ |  $$ |$$ | $$ | $$ |$$   ____|$$ |  $$ |
+//   \$$$$  |$$ |  $$ |$$ |$$ |      \$$$$$$$ |\$$$$$\$$$$  |\$$$$$$$\ $$$$$$$  |
+//    \____/ \__|  \__|\__|\__|       \_______| \_____\____/  \_______|\_______/
+
 //  ==========  External imports    ==========
 
 import "../../extension/Multicall.sol";
 import "@openzeppelin/contracts-upgradeable/utils/StringsUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/interfaces/IERC2981Upgradeable.sol";
+import "@limitbreak/creator-token-standards/utils/CreatorTokenBase.sol";
+import "@limitbreak/creator-token-standards/utils/AutomaticValidatorTransferApproval.sol";
 
-import "erc721a-upgradeable/contracts/ERC721AUpgradeable.sol";
+import "../../eip/ERC721AVirtualApproveUpgradeable.sol";
 
 //  ==========  Internal imports    ==========
 
-import "../../external-deps/openzeppelin/metatx/ERC2771ContextUpgradeable.sol";
 import "../../lib/CurrencyTransferLib.sol";
 
 //  ==========  Features    ==========
@@ -24,12 +34,11 @@ import "../../extension/Royalty.sol";
 import "../../extension/PrimarySale.sol";
 import "../../extension/Ownable.sol";
 import "../../extension/DelayedReveal.sol";
-import "../extension/LazyMint_V1.sol";
+import "../../extension/LazyMint.sol";
 import "../../extension/PermissionsEnumerable.sol";
-import "../extension/DropSinglePhase_V1.sol";
-import "../../extension/SignatureMintERC721Upgradeable.sol";
+import "../../extension/Drop.sol";
 
-contract SignatureDrop_V4 is
+contract DropERC721C is
     Initializable,
     ContractMetadata,
     PlatformFee,
@@ -37,13 +46,13 @@ contract SignatureDrop_V4 is
     PrimarySale,
     Ownable,
     DelayedReveal,
-    LazyMint_V1,
+    LazyMint,
     PermissionsEnumerable,
-    DropSinglePhase_V1,
-    SignatureMintERC721Upgradeable,
-    ERC2771ContextUpgradeable,
+    Drop,
     Multicall,
-    ERC721AUpgradeable
+    ERC721AUpgradeable,
+    CreatorTokenBase,
+    AutomaticValidatorTransferApproval
 {
     using StringsUpgradeable for uint256;
 
@@ -55,13 +64,31 @@ contract SignatureDrop_V4 is
     bytes32 private transferRole;
     /// @dev Only MINTER_ROLE holders can sign off on `MintRequest`s and lazy mint tokens.
     bytes32 private minterRole;
+    /// @dev Only METADATA_ROLE holders can reveal the URI for a batch of delayed reveal NFTs, and update or freeze batch metadata.
+    bytes32 private metadataRole;
 
     /// @dev Max bps in the thirdweb system.
     uint256 private constant MAX_BPS = 10_000;
 
+    address public constant DEFAULT_FEE_RECIPIENT = 0x1Af20C6B23373350aD464700B5965CE4B0D2aD94;
+    uint16 private constant DEFAULT_FEE_BPS = 50;
+
+    /// @dev Constant value representing the ERC721 token type for signatures and transfer hooks
+    uint256 constant TOKEN_TYPE_ERC721 = 721;
+
+    /// @dev Global max total supply of NFTs.
+    uint256 public maxTotalSupply;
+
+    /// @dev Emitted when the global max supply of tokens is updated.
+    event MaxTotalSupplyUpdated(uint256 maxTotalSupply);
+
+    error NotAuthorized();
+
     /*///////////////////////////////////////////////////////////////
                     Constructor + initializer logic
     //////////////////////////////////////////////////////////////*/
+
+    constructor() initializer {}
 
     /// @dev Initializes the contract, like a constructor.
     function initialize(
@@ -69,32 +96,71 @@ contract SignatureDrop_V4 is
         string memory _name,
         string memory _symbol,
         string memory _contractURI,
-        address[] memory _trustedForwarders,
+        address[] memory _trustedForwarders, // unused
         address _saleRecipient,
         address _royaltyRecipient,
         uint128 _royaltyBps,
         uint128 _platformFeeBps,
         address _platformFeeRecipient
     ) external initializer {
-        transferRole = keccak256("TRANSFER_ROLE");
-        minterRole = keccak256("MINTER_ROLE");
+        bytes32 _transferRole = keccak256("TRANSFER_ROLE");
+        bytes32 _minterRole = keccak256("MINTER_ROLE");
+        bytes32 _metadataRole = keccak256("METADATA_ROLE");
 
         // Initialize inherited contracts, most base-like -> most derived.
-        __ERC2771Context_init(_trustedForwarders);
         __ERC721A_init(_name, _symbol);
-        __SignatureMintERC721_init();
 
         _setupContractURI(_contractURI);
         _setupOwner(_defaultAdmin);
 
         _setupRole(DEFAULT_ADMIN_ROLE, _defaultAdmin);
-        _setupRole(minterRole, _defaultAdmin);
-        _setupRole(transferRole, _defaultAdmin);
-        _setupRole(transferRole, address(0));
+        _setupRole(_minterRole, _defaultAdmin);
+        _setupRole(_transferRole, _defaultAdmin);
+        _setupRole(_transferRole, address(0));
+        _setupRole(_metadataRole, _defaultAdmin);
+        _setRoleAdmin(_metadataRole, _metadataRole);
 
         _setupPlatformFeeInfo(_platformFeeRecipient, _platformFeeBps);
         _setupDefaultRoyaltyInfo(_royaltyRecipient, _royaltyBps);
         _setupPrimarySaleRecipient(_saleRecipient);
+
+        transferRole = _transferRole;
+        minterRole = _minterRole;
+        metadataRole = _metadataRole;
+
+        _emitDefaultTransferValidator();
+        _registerTokenType(DEFAULT_TRANSFER_VALIDATOR);
+    }
+
+    /**
+     * @notice Overrides behavior of isApprovedFor all such that if an operator is not explicitly approved
+     *         for all, the contract owner can optionally auto-approve the 721-C transfer validator for transfers.
+     */
+    function isApprovedForAll(address owner, address operator) public view virtual override returns (bool isApproved) {
+        isApproved = super.isApprovedForAll(owner, operator);
+
+        if (!isApproved) {
+            if (autoApproveTransfersFromValidator) {
+                isApproved = operator == address(getTransferValidator());
+            }
+        }
+    }
+
+    /**
+     * @notice Returns the function selector for the transfer validator's validation function to be called 
+     * @notice for transaction simulation. 
+     */
+    function getTransferValidationFunction() external pure returns (bytes4 functionSignature, bool isViewFunction) {
+        functionSignature = bytes4(keccak256("validateTransfer(address,address,address,uint256)"));
+        isViewFunction = true;
+    }
+
+    function _tokenType() internal pure override returns(uint16) {
+        return uint16(TOKEN_TYPE_ERC721);
+    }
+
+    function _contextSuffixLength() internal view virtual override(Context, ContextUpgradeable) returns (uint256) {
+        return super._contextSuffixLength();
     }
 
     /*///////////////////////////////////////////////////////////////
@@ -117,11 +183,15 @@ contract SignatureDrop_V4 is
     function supportsInterface(
         bytes4 interfaceId
     ) public view virtual override(ERC721AUpgradeable, IERC165) returns (bool) {
-        return super.supportsInterface(interfaceId) || type(IERC2981Upgradeable).interfaceId == interfaceId;
+        return super.supportsInterface(interfaceId) || type(IERC2981Upgradeable).interfaceId == interfaceId || interfaceId == type(ICreatorToken).interfaceId || interfaceId == type(ICreatorTokenLegacy).interfaceId;
     }
 
+    /*///////////////////////////////////////////////////////////////
+                        Contract identifiers
+    //////////////////////////////////////////////////////////////*/
+
     function contractType() external pure returns (bytes32) {
-        return bytes32("SignatureDrop");
+        return bytes32("DropERC721");
     }
 
     function contractVersion() external pure returns (uint8) {
@@ -151,11 +221,13 @@ contract SignatureDrop_V4 is
         return super.lazyMint(_amount, _baseURIForTokens, _data);
     }
 
-    /// @dev Lets an account with `MINTER_ROLE` reveal the URI for a batch of 'delayed-reveal' NFTs.
+    /// @dev Lets an account with `METADATA_ROLE` reveal the URI for a batch of 'delayed-reveal' NFTs.
+    /// @param _index the ID of a token with the desired batch.
+    /// @param _key the key to decrypt the batch's URI.
     function reveal(
         uint256 _index,
         bytes calldata _key
-    ) external onlyRole(minterRole) returns (string memory revealedURI) {
+    ) external onlyRole(metadataRole) returns (string memory revealedURI) {
         uint256 batchId = getBatchIdAtIndex(_index);
         revealedURI = getRevealURI(batchId, _key);
 
@@ -165,37 +237,37 @@ contract SignatureDrop_V4 is
         emit TokenURIRevealed(_index, revealedURI);
     }
 
+    /**
+     * @notice Updates the base URI for a batch of tokens. Can only be called if the batch has been revealed/is not encrypted.
+     *
+     * @param _index Index of the desired batch in batchIds array
+     * @param _uri   the new base URI for the batch.
+     */
+    function updateBatchBaseURI(uint256 _index, string calldata _uri) external onlyRole(metadataRole) {
+        require(!isEncryptedBatch(getBatchIdAtIndex(_index)), "Encrypted batch");
+        uint256 batchId = getBatchIdAtIndex(_index);
+        _setBaseURI(batchId, _uri);
+    }
+
+    /**
+     * @notice Freezes the base URI for a batch of tokens.
+     *
+     * @param _index Index of the desired batch in batchIds array.
+     */
+    function freezeBatchBaseURI(uint256 _index) external onlyRole(metadataRole) {
+        require(!isEncryptedBatch(getBatchIdAtIndex(_index)), "Encrypted batch");
+        uint256 batchId = getBatchIdAtIndex(_index);
+        _freezeBaseURI(batchId);
+    }
+
     /*///////////////////////////////////////////////////////////////
-                    Claiming lazy minted tokens logic
+                        Setter functions
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Claim lazy minted tokens via signature.
-    function mintWithSignature(
-        MintRequest calldata _req,
-        bytes calldata _signature
-    ) external payable returns (address signer) {
-        uint256 tokenIdToMint = _currentIndex;
-        if (tokenIdToMint + _req.quantity > nextTokenIdToLazyMint) {
-            revert("Not enough tokens");
-        }
-
-        // Verify and process payload.
-        signer = _processRequest(_req, _signature);
-
-        address receiver = _req.to;
-
-        // Collect price
-        _collectPriceOnClaim(_req.primarySaleRecipient, _req.quantity, _req.currency, _req.pricePerToken);
-
-        // Set royalties, if applicable.
-        if (_req.royaltyRecipient != address(0) && _req.royaltyBps != 0) {
-            _setupRoyaltyInfoForToken(tokenIdToMint, _req.royaltyRecipient, _req.royaltyBps);
-        }
-
-        // Mint tokens.
-        _safeMint(receiver, _req.quantity);
-
-        emit TokensMintedWithSignature(signer, receiver, tokenIdToMint, _req);
+    /// @dev Lets a contract admin set the global maximum supply for collection's NFTs.
+    function setMaxTotalSupply(uint256 _maxTotalSupply) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        maxTotalSupply = _maxTotalSupply;
+        emit MaxTotalSupplyUpdated(_maxTotalSupply);
     }
 
     /*///////////////////////////////////////////////////////////////
@@ -211,9 +283,8 @@ contract SignatureDrop_V4 is
         AllowlistProof calldata,
         bytes memory
     ) internal view override {
-        bool bot = isTrustedForwarder(msg.sender) || _msgSender() == tx.origin;
-        require(bot, "BOT");
-        require(_currentIndex + _quantity <= nextTokenIdToLazyMint, "Not enough tokens");
+        require(_currentIndex + _quantity <= nextTokenIdToLazyMint, "!Tokens");
+        require(maxTotalSupply == 0 || _currentIndex + _quantity <= maxTotalSupply, "!Supply");
     }
 
     /// @dev Collects and distributes the primary sale value of NFTs being claimed.
@@ -224,6 +295,7 @@ contract SignatureDrop_V4 is
         uint256 _pricePerToken
     ) internal override {
         if (_pricePerToken == 0) {
+            require(msg.value == 0, "!V");
             return;
         }
 
@@ -232,16 +304,25 @@ contract SignatureDrop_V4 is
         address saleRecipient = _primarySaleRecipient == address(0) ? primarySaleRecipient() : _primarySaleRecipient;
 
         uint256 totalPrice = _quantityToClaim * _pricePerToken;
+        uint256 platformFeesTw = (totalPrice * DEFAULT_FEE_BPS) / MAX_BPS;
         uint256 platformFees = (totalPrice * platformFeeBps) / MAX_BPS;
 
+        bool validMsgValue;
         if (_currency == CurrencyTransferLib.NATIVE_TOKEN) {
-            if (msg.value != totalPrice) {
-                revert("Must send total price");
-            }
+            validMsgValue = msg.value == totalPrice;
+        } else {
+            validMsgValue = msg.value == 0;
         }
+        require(validMsgValue, "!V");
 
+        CurrencyTransferLib.transferCurrency(_currency, _msgSender(), DEFAULT_FEE_RECIPIENT, platformFeesTw);
         CurrencyTransferLib.transferCurrency(_currency, _msgSender(), platformFeeRecipient, platformFees);
-        CurrencyTransferLib.transferCurrency(_currency, _msgSender(), saleRecipient, totalPrice - platformFees);
+        CurrencyTransferLib.transferCurrency(
+            _currency,
+            _msgSender(),
+            saleRecipient,
+            totalPrice - platformFees - platformFeesTw
+        );
     }
 
     /// @dev Transfers the NFTs being claimed.
@@ -251,11 +332,6 @@ contract SignatureDrop_V4 is
     ) internal override returns (uint256 startTokenId) {
         startTokenId = _currentIndex;
         _safeMint(_to, _quantityBeingClaimed);
-    }
-
-    /// @dev Returns whether a given address is authorized to sign mint requests.
-    function _isAuthorizedSigner(address _signer) internal view override returns (bool) {
-        return hasRole(minterRole, _signer);
     }
 
     /// @dev Checks whether platform fee info can be set in the given execution context.
@@ -293,6 +369,12 @@ contract SignatureDrop_V4 is
         return hasRole(minterRole, _msgSender());
     }
 
+    function _requireCallerIsContractOwner() internal view virtual override {
+        if(!hasRole(DEFAULT_ADMIN_ROLE, _msgSender())) {
+            revert NotAuthorized();
+        }
+    }
+
     /*///////////////////////////////////////////////////////////////
                         Miscellaneous
     //////////////////////////////////////////////////////////////*/
@@ -301,14 +383,17 @@ contract SignatureDrop_V4 is
      * Returns the total amount of tokens minted in the contract.
      */
     function totalMinted() external view returns (uint256) {
-        unchecked {
-            return _currentIndex - _startTokenId();
-        }
+        return _totalMinted();
     }
 
     /// @dev The tokenId of the next NFT that will be minted / lazy minted.
     function nextTokenIdToMint() external view returns (uint256) {
         return nextTokenIdToLazyMint;
+    }
+
+    /// @dev The next token ID of the NFT that can be claimed.
+    function nextTokenIdToClaim() external view returns (uint256) {
+        return _currentIndex;
     }
 
     /// @dev Burns `tokenId`. See {ERC721-_burn}.
@@ -326,10 +411,32 @@ contract SignatureDrop_V4 is
     ) internal virtual override {
         super._beforeTokenTransfers(from, to, startTokenId, quantity);
 
+        for (uint256 i = 0; i < quantity;) {
+            _validateBeforeTransfer(from, to, startTokenId + i);
+            unchecked {
+                ++i;
+            }
+        }
+
         // if transfer is restricted on the contract, we still want to allow burning and minting
         if (!hasRole(transferRole, address(0)) && from != address(0) && to != address(0)) {
             if (!hasRole(transferRole, from) && !hasRole(transferRole, to)) {
                 revert("!Transfer-Role");
+            }
+        }
+    }
+
+    /// @dev Ties the erc721a _afterTokenTransfer hook to more granular transfer validation logic
+    function _afterTokenTransfers(
+        address from,
+        address to,
+        uint256 startTokenId,
+        uint256 quantity
+    ) internal virtual override {
+        for (uint256 i = 0; i < quantity;) {
+            _validateAfterTransfer(from, to, startTokenId + i);
+            unchecked {
+                ++i;
             }
         }
     }
@@ -342,19 +449,19 @@ contract SignatureDrop_V4 is
         internal
         view
         virtual
-        override(ContextUpgradeable, ERC2771ContextUpgradeable, Multicall)
+        override(Context, ContextUpgradeable, Multicall)
         returns (address sender)
     {
-        return ERC2771ContextUpgradeable._msgSender();
+        return super._msgSender();
     }
 
     function _msgData()
         internal
         view
         virtual
-        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        override(Context, ContextUpgradeable)
         returns (bytes calldata)
     {
-        return ERC2771ContextUpgradeable._msgData();
+        return super._msgData();
     }
 }
